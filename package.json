@@ -1,0 +1,20 @@
+{
+  "name": "toest-to-bsky",
+  "version": "1.0.0",
+  "main": "checkAndPost.js",
+  "scripts": {
+    "checkAndPost": "env-cmd -f .env node src/checkAndPost.js"
+  },
+  "keywords": [],
+  "author": "Teodossi Dossev",
+  "license": "MIT",
+  "description": "a small Node.js utility that checks the Toest YouTube channel once a week and automatically posts any newly published videos to a Bluesky profile",
+  "type": "module",
+  "dependencies": {
+    "@atproto/api": "^0.16.1",
+    "googleapis": "^155.0.0"
+  },
+  "devDependencies": {
+    "env-cmd": "^10.1.0"
+  }
+}
