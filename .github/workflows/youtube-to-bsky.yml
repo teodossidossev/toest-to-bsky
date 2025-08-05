@@ -3,6 +3,7 @@ name: 'Check YouTube and Post to Bsky'
 on:
   schedule:
     - cron: '0 15 * * FRI'
+  workflow_dispatch:
 
 jobs:
   check_and_post:
