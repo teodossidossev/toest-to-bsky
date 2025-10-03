@@ -9,7 +9,7 @@ const BSKY_USERNAME = process.env.BSKY_USERNAME;
 const BSKY_APP_PASSWORD = process.env.BSKY_APP_PASSWORD;
 
 // Look back period in days
-const LOOKBACK_DAYS = 7;
+const LOOKBACK_DAYS = 2;
 
 // File used to store already-posted video IDs to avoid duplicates
 const POSTED_DB = path.resolve(process.cwd(), 'posted.json');
@@ -22,7 +22,7 @@ async function loadPostedIds() {
             return new Set(parsed);
         }
         return new Set();
-    } catch (err) {
+    } catch (_err) {
         return new Set();
     }
 }
@@ -52,29 +52,57 @@ function isPublishedTodayInSofia(isoDateString) {
     return today === published;
 }
 
-async function getLatestVideo() {
-    console.info('Start youtube check');
+async function getVideosSince(publishedAfterIso) {
     const youtube = google.youtube({ version: 'v3' });
+    const all = [];
+    let pageToken = undefined;
 
-    const response = await youtube.search.list({
-        key: YOUTUBE_API_KEY,
-        channelId: CHANNEL_ID,
-        order: 'date',
-        part: 'snippet',
-        maxResults: 1,
-        publishedAfter: new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString()
-    }, {
-        otherArgs: {
-            headers: {
-                'X-Goog-Api-Key': YOUTUBE_API_KEY
+    do {
+        const response = await youtube.search.list({
+            key: YOUTUBE_API_KEY,
+            channelId: CHANNEL_ID,
+            order: 'date',
+            part: 'snippet',
+            maxResults: 50,
+            publishedAfter: publishedAfterIso,
+            type: 'video',
+            pageToken
+        }, {
+            otherArgs: {
+                headers: {
+                    'X-Goog-Api-Key': YOUTUBE_API_KEY
+                }
             }
+        });
+
+        if (response.data.items && response.data.items.length > 0) {
+            all.push(...response.data.items);
         }
+        pageToken = response.data.nextPageToken || undefined;
+    } while (pageToken);
+
+    return all;
+}
+
+async function getTodaysMatchingVideos() {
+    const publishedAfterIso = new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const items = await getVideosSince(publishedAfterIso);
+
+    const todays = items.filter(v => {
+        const pa = v?.snippet?.publishedAt;
+        if (!pa) {
+            return false;
+        }
+        return isPublishedTodayInSofia(pa) && titleMatches(v);
     });
 
-    if (response.data.items && response.data.items.length > 0) {
-        return response.data.items[0];
-    }
-    return null;
+    todays.sort((a, b) => {
+        const ta = new Date(a.snippet.publishedAt).getTime();
+        const tb = new Date(b.snippet.publishedAt).getTime();
+        return tb - ta;
+    });
+
+    return todays;
 }
 
 async function postToBsky(video) {
@@ -94,7 +122,7 @@ async function postToBsky(video) {
 
     // video
     const videoUrl = `https://www.youtube.com/watch?v=${video.id.videoId}`;
-    const postText = `(bot) Новo видео Т.Е. от Е.Т.: ${videoUrl}`;
+    const postText = `(bot) Ново видео Т.Е. от Е.Т.: ${videoUrl}`;
     const title = video.snippet.title;
     const description = video.snippet.description;
 
@@ -123,40 +151,33 @@ async function postToBsky(video) {
     try {
         const posted = await loadPostedIds();
 
-        const video = await getLatestVideo();
-        if (video) {
-            const id = video?.id?.videoId;
-            const publishedAt = video?.snippet?.publishedAt;
+        const candidates = await getTodaysMatchingVideos();
 
-            if (!id) {
-                console.log('No video id found for the latest item.');
-                process.exit(0);
-            }
-
-            if (!titleMatches(video)) {
-                console.log('Latest video does not match required title prefix.');
-                process.exit(0);
-            }
-
-            if (!publishedAt || !isPublishedTodayInSofia(publishedAt)) {
-                console.log('Latest video is not from today (Europe/Sofia).');
-                process.exit(0);
-            }
-
-            if (posted.has(id)) {
-                console.log('Video already posted. Skipping to avoid duplicate.');
-                process.exit(0);
-            }
-
-            await postToBsky(video);
-
-            posted.add(id);
-            await savePostedIds(posted);
-
-            console.log('Posted to Bluesky:', id);
-        } else {
-            console.log('No new videos found this week.');
+        if (candidates.length === 0) {
+            console.log('No matching videos today (Europe/Sofia).');
+            process.exit(0);
         }
+
+        const toPost = candidates.find(v => {
+            const id = v?.id?.videoId;
+            if (!id) {
+                return false;
+            }
+            return !posted.has(id);
+        });
+
+        if (!toPost) {
+            console.log('All matching videos for today are already posted. Skipping.');
+            process.exit(0);
+        }
+
+        await postToBsky(toPost);
+
+        const id = toPost.id.videoId;
+        posted.add(id);
+        await savePostedIds(posted);
+
+        console.log('Posted to Bluesky:', id);
     } catch (error) {
         console.error(error);
         process.exit(1);
